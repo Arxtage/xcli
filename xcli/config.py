@@ -4,7 +4,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".xcli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-REQUIRED_KEYS = ["api_key", "api_secret", "access_token", "access_token_secret"]
+REQUIRED_KEYS = ["consumer_key", "consumer_secret", "access_token", "access_token_secret"]
 
 
 def save_config(config: dict) -> None:

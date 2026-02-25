@@ -15,14 +15,14 @@ def cli():
 def setup():
     """Configure your X API credentials."""
     click.echo("Enter your X API credentials.\n")
-    api_key = click.prompt("API Key", hide_input=True)
-    api_secret = click.prompt("API Secret", hide_input=True)
+    consumer_key = click.prompt("Consumer Key", hide_input=True)
+    consumer_secret = click.prompt("Consumer Secret", hide_input=True)
     access_token = click.prompt("Access Token", hide_input=True)
     access_token_secret = click.prompt("Access Token Secret", hide_input=True)
 
     config = {
-        "api_key": api_key,
-        "api_secret": api_secret,
+        "consumer_key": consumer_key,
+        "consumer_secret": consumer_secret,
         "access_token": access_token,
         "access_token_secret": access_token_secret,
     }

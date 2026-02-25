@@ -6,8 +6,8 @@ BASE_URL = "https://api.x.com/2"
 
 def _make_auth(config: dict) -> OAuth1:
     return OAuth1(
-        config["api_key"],
-        config["api_secret"],
+        config["consumer_key"],
+        config["consumer_secret"],
         config["access_token"],
         config["access_token_secret"],
     )

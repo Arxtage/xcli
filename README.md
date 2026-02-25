@@ -10,7 +10,12 @@ pip install .
 
 ## Setup
 
-You'll need X API credentials (API Key, API Secret, Access Token, Access Token Secret) from the [X Developer Portal](https://developer.x.com/).
+You'll need OAuth 1.0a credentials from the [X Developer Portal](https://developer.x.com/). Create an app in the portal and grab the following four tokens:
+
+- **Consumer Key** / **Consumer Secret** — identify your app
+- **Access Token** / **Access Token Secret** — grant access to a specific user account
+
+Then run:
 
 ```bash
 xcli setup
