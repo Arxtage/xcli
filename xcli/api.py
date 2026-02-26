@@ -6,7 +6,7 @@ import requests
 from requests_oauthlib import OAuth1
 
 BASE_URL = "https://api.x.com/2"
-UPLOAD_URL = f"{BASE_URL}/media/upload"
+UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
 
 SIMPLE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB chunks
@@ -100,13 +100,13 @@ def _simple_upload(
     with open(file_path, "rb") as f:
         resp = requests.post(
             UPLOAD_URL,
-            files={"file": (os.path.basename(file_path), f, media_type)},
+            files={"media": (os.path.basename(file_path), f, media_type)},
             data={"media_category": media_category},
             auth=auth,
             timeout=60,
         )
     resp.raise_for_status()
-    return resp.json()["id"]
+    return resp.json()["media_id_string"]
 
 
 def _chunked_upload(
