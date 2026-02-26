@@ -404,21 +404,19 @@ def _display_dms() -> None:
 
 
 @cli.command()
-@click.option("--replies", is_flag=True, help="Show only replies and mentions.")
-@click.option("--dms", is_flag=True, help="Show only DMs.")
-def check(replies: bool, dms: bool):
-    """Check recent replies, mentions, and DMs."""
-    show_all = not replies and not dms
+def mentions():
+    """Show your recent posts and mentions."""
+    try:
+        username = _get_username()
+    except Exception as e:
+        raise click.ClickException(f"Failed to get user info: {e}")
+    _display_replies_graphql(username)
 
-    if show_all or replies:
-        try:
-            username = _get_username()
-        except Exception as e:
-            raise click.ClickException(f"Failed to get user info: {e}")
-        _display_replies_graphql(username)
 
-    if show_all or dms:
-        _display_dms()
+@cli.command()
+def dms():
+    """Show your recent DMs."""
+    _display_dms()
 
 
 # ---------------------------------------------------------------------------
@@ -440,8 +438,8 @@ def search(query: str, count: int):
 
 @cli.command()
 @click.option("-n", "--count", default=20, help="Number of tweets.")
-def home(count: int):
-    """Show your home timeline."""
+def feed(count: int):
+    """Show your home feed."""
     try:
         tweets = graphql.get_home_timeline(count=count)
     except Exception as e:

@@ -44,11 +44,11 @@ This prompts for your credentials, verifies them, and saves them to `~/.xcli/con
 
 All read commands use browser cookies — no API setup required.
 
-#### Home Timeline
+#### Feed
 
 ```bash
-xcli home
-xcli home -n 10
+xcli feed
+xcli feed -n 10
 ```
 
 Example output:
@@ -170,39 +170,20 @@ Third tweet with a video
 @media: clip.mp4
 ```
 
-### Check
+### Mentions
 
-See recent activity — posts, mentions, and DMs. All use browser cookies (free, no API keys needed).
-
-```bash
-xcli check
-```
-
-Show only replies and mentions:
+See your recent posts and mentions. Uses browser cookies (free, no API keys needed).
 
 ```bash
-xcli check --replies
+xcli mentions
 ```
 
-Show only DMs:
+### DMs
+
+See your recent DMs.
 
 ```bash
-xcli check --dms
-```
-
-Example output:
-
-```
---- Recent Posts ---
-  1. @you
-     Hello from the terminal!
-     2 replies  5 likes  1 reposts — x.com/i/status/123
-
---- Recent Mentions ---
-  @alice: @you love this tool!
-
---- Recent DMs ---
-  @charlie (2026-02-26): Hey, wanted to ask about your project
+xcli dms
 ```
 
 ## License
