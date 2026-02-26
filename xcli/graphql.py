@@ -1,4 +1,7 @@
-"""X GraphQL client for free, cookie-authenticated read operations."""
+"""X browser-based client for free, cookie-authenticated read operations.
+
+Uses GraphQL endpoints for tweets/users and v1.1 REST for DMs.
+"""
 
 import re
 import uuid
@@ -449,3 +452,109 @@ def whoami() -> dict:
         "followers": data.get("followers_count", 0),
         "following": data.get("friends_count", 0),
     }
+
+
+def _expand_dm_text(msg_data: dict) -> str:
+    """Replace t.co links with expanded URLs in DM text."""
+    text = msg_data.get("text", "")
+    for url_entity in msg_data.get("entities", {}).get("urls", []):
+        short = url_entity.get("url", "")
+        expanded = url_entity.get("expanded_url", short)
+        if short:
+            text = text.replace(short, expanded)
+    return text
+
+
+def _parse_dm_inbox(data: dict) -> list[dict]:
+    """Parse the v1.1 DM inbox response into per-conversation last messages.
+
+    Returns one entry per conversation (the most recent message), sorted
+    by timestamp descending.
+    """
+    inbox = data.get("inbox_initial_state", {})
+    users = inbox.get("users", {})
+    entries = inbox.get("entries", [])
+    conversations = inbox.get("conversations", {})
+
+    # Identify the authenticated user from conversations
+    me_id = None
+    for conv in conversations.values():
+        participants = conv.get("participants", [])
+        if len(participants) == 2:
+            # We appear in every conversation — pick the common ID
+            ids = {p.get("user_id") for p in participants}
+            if me_id is None:
+                me_id = ids
+            else:
+                me_id &= ids
+    me_id = me_id.pop() if me_id and len(me_id) == 1 else None
+
+    # Track the latest message per conversation
+    latest: dict[str, dict] = {}
+    for entry in entries:
+        msg = entry.get("message", {})
+        msg_data = msg.get("message_data", {})
+        if not msg_data:
+            continue
+        conv_id = msg.get("conversation_id", "")
+        ts = int(msg.get("time", "0") or "0")
+        if conv_id in latest and latest[conv_id]["_ts"] >= ts:
+            continue
+
+        sender_id = msg_data.get("sender_id", "")
+        recipient_id = msg_data.get("recipient_id", "")
+        sender = users.get(sender_id, {})
+
+        # The "other person" is whoever isn't me
+        if me_id:
+            other_id = recipient_id if sender_id == me_id else sender_id
+        else:
+            other_id = sender_id
+        other = users.get(other_id, {})
+
+        text = _expand_dm_text(msg_data)
+
+        latest[conv_id] = {
+            "other_username": other.get("screen_name", "unknown"),
+            "other_name": other.get("name", ""),
+            "sender_username": sender.get("screen_name", "unknown"),
+            "text": text,
+            "created_at": str(ts),
+            "conversation_id": conv_id,
+            "_ts": ts,
+        }
+
+    # Sort by timestamp descending (newest first)
+    result = sorted(latest.values(), key=lambda m: m["_ts"], reverse=True)
+    for m in result:
+        del m["_ts"]
+    return result
+
+
+def get_dm_inbox(count: int = 10) -> list[dict]:
+    """Fetch recent DMs via the v1.1 REST endpoint using browser cookies."""
+    cookies = get_read_cookies()
+    headers = _build_headers(cookies)
+    resp = requests.get(
+        "https://api.x.com/1.1/dm/inbox_initial_state.json",
+        headers=headers,
+        timeout=15,
+    )
+    if resp.status_code == 401:
+        clear_cached_cookies()
+        cookies = get_read_cookies()
+        headers = _build_headers(cookies)
+        resp = requests.get(
+            "https://api.x.com/1.1/dm/inbox_initial_state.json",
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "X session expired. Log into x.com in your browser and try again."
+            )
+    if resp.status_code == 429:
+        raise RuntimeError("Rate limited by X. Wait a few minutes and try again.")
+    if resp.status_code != 200:
+        raise RuntimeError(f"DM inbox failed with status {resp.status_code}")
+    return _parse_dm_inbox(resp.json())[:count]

@@ -43,84 +43,12 @@ def verify_credentials(config: dict) -> dict:
     return {"id": data["id"], "username": data["username"]}
 
 
-def _api_request(config: dict, method: str, url: str, **kwargs) -> requests.Response | None:
-    """Authenticated request wrapper. Returns None on 403, raises on other errors."""
-    kwargs.setdefault("timeout", 10)
-    resp = requests.request(method, url, auth=_make_auth(config), **kwargs)
-    if resp.status_code == 401:
-        raise PermissionError("Authentication failed. Check your API keys.")
-    if resp.status_code == 403:
-        return None
-    resp.raise_for_status()
-    return resp
-
-
-def get_recent_tweets(config: dict, user_id: str, max_results: int = 5) -> list[dict] | None:
-    """Fetch user's recent tweets with metrics. Returns None on 403."""
-    resp = _api_request(
-        config, "GET",
-        f"{BASE_URL}/users/{user_id}/tweets",
-        params={
-            "max_results": max_results,
-            "tweet.fields": "public_metrics,created_at",
-        },
-    )
-    if resp is None:
-        return None
-    data = resp.json()
-    return data.get("data", [])
-
-
-def get_mentions(config: dict, user_id: str, max_results: int = 10) -> dict | None:
-    """Fetch recent mentions. Returns {"tweets": [...], "users": {id: username}} or None on 403."""
-    resp = _api_request(
-        config, "GET",
-        f"{BASE_URL}/users/{user_id}/mentions",
-        params={
-            "max_results": max_results,
-            "tweet.fields": "created_at,author_id",
-            "expansions": "author_id",
-            "user.fields": "username",
-        },
-    )
-    if resp is None:
-        return None
-    body = resp.json()
-    tweets = body.get("data", [])
-    users = {}
-    for u in body.get("includes", {}).get("users", []):
-        users[u["id"]] = u["username"]
-    return {"tweets": tweets, "users": users}
-
-
-def get_dm_events(config: dict, max_results: int = 10) -> dict | None:
-    """Fetch recent DM events. Returns {"events": [...], "users": {id: username}} or None on 403."""
-    resp = _api_request(
-        config, "GET",
-        f"{BASE_URL}/dm_events",
-        params={
-            "max_results": max_results,
-            "dm_event.fields": "created_at,sender_id,text",
-            "event_types": "MessageCreate",
-            "expansions": "sender_id",
-            "user.fields": "username",
-        },
-    )
-    if resp is None:
-        return None
-    body = resp.json()
-    events = body.get("data", [])
-    users = {}
-    for u in body.get("includes", {}).get("users", []):
-        users[u["id"]] = u["username"]
-    return {"events": events, "users": users}
-
-
 def post_tweet(
     config: dict,
     text: str,
     media_ids: list[str] | None = None,
     reply_to_id: str | None = None,
+    quote_tweet_id: str | None = None,
 ) -> dict:
     """Post a tweet and return the response data (id, text)."""
     payload: dict = {"text": text}
@@ -128,6 +56,8 @@ def post_tweet(
         payload["media"] = {"media_ids": media_ids}
     if reply_to_id:
         payload["reply"] = {"in_reply_to_tweet_id": reply_to_id}
+    if quote_tweet_id:
+        payload["quote_tweet_id"] = quote_tweet_id
 
     resp = requests.post(
         f"{BASE_URL}/tweets",

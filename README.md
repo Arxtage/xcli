@@ -23,7 +23,7 @@ Verify it works:
 xcli whoami
 ```
 
-### Posting (API credentials — required for `post`, `thread`, DMs)
+### Posting (API credentials — required for `post` and `thread`)
 
 You'll need OAuth 1.0a credentials from the [X Developer Portal](https://developer.x.com/). Create an app and grab:
 
@@ -136,6 +136,13 @@ xcli post "Watch this" -m video.mp4
 
 Supported formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`, `.mp4`, `.mov`
 
+### Quote Tweet
+
+```bash
+xcli post "My take on this" -q https://x.com/user/status/1234567890
+xcli post "Interesting" -q 1234567890
+```
+
 ### Threads
 
 Post a chain of replies using inline arguments:
@@ -165,7 +172,7 @@ Third tweet with a video
 
 ### Check
 
-See recent activity — posts, mentions, and DMs. Posts and mentions use browser cookies (GraphQL); DMs use the official API.
+See recent activity — posts, mentions, and DMs. All use browser cookies (free, no API keys needed).
 
 ```bash
 xcli check
@@ -197,8 +204,6 @@ Example output:
 --- Recent DMs ---
   @charlie (2026-02-26): Hey, wanted to ask about your project
 ```
-
-> **Note:** DMs require API credentials (`xcli setup`). Some DM endpoints may not be available on all API tiers.
 
 ## License
 

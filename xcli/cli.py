@@ -8,9 +8,6 @@ from xcli.api import (
     GIF_EXTENSIONS,
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
-    get_dm_events,
-    get_mentions as api_get_mentions,
-    get_recent_tweets,
     post_tweet,
     upload_media,
     verify_credentials,
@@ -178,7 +175,12 @@ def _upload_media_files(config: dict, media: tuple[str, ...] | list[str]) -> lis
     type=click.Path(),
     help="Attach media file (image/video/GIF). Repeatable, up to 4 images or 1 video/GIF.",
 )
-def post(text: str, media: tuple[str, ...]):
+@click.option(
+    "-q", "--quote",
+    default=None,
+    help="Quote tweet by URL or ID.",
+)
+def post(text: str, media: tuple[str, ...], quote: str | None):
     """Post to X. Use '-' to read from stdin."""
     if text == "-":
         text = sys.stdin.read().strip()
@@ -200,9 +202,15 @@ def post(text: str, media: tuple[str, ...]):
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
 
+    quote_id = None
+    if quote:
+        import re
+        match = re.search(r"/status/(\d+)", quote)
+        quote_id = match.group(1) if match else quote
+
     try:
         media_ids = _upload_media_files(config, media) if media else None
-        data = post_tweet(config, text, media_ids=media_ids)
+        data = post_tweet(config, text, media_ids=media_ids, quote_tweet_id=quote_id)
     except PermissionError as e:
         raise click.ClickException(str(e))
     except Exception as e:
@@ -316,7 +324,7 @@ def thread(tweets: tuple[str, ...], from_file: str | None):
 
 
 # ---------------------------------------------------------------------------
-# Check (refactored to use GraphQL for posts/mentions, API for DMs)
+# Check (all reading via browser cookies — GraphQL + v1.1 REST)
 # ---------------------------------------------------------------------------
 
 
@@ -351,24 +359,6 @@ def _display_replies_graphql(username: str) -> None:
             click.echo()
     except Exception as e:
         click.echo(f"  (GraphQL failed: {e})\n")
-        # Fall back to API
-        try:
-            config = load_config()
-            user_id = config.get("user_id", "")
-            if user_id:
-                tweets = get_recent_tweets(config, user_id)
-                if tweets:
-                    for t in tweets:
-                        click.echo(f"  {t['text']}")
-                        m = t.get("public_metrics", {})
-                        click.echo(
-                            f"    Replies: {m.get('reply_count', 0)}  "
-                            f"Likes: {m.get('like_count', 0)}  "
-                            f"Reposts: {m.get('retweet_count', 0)}"
-                        )
-                    click.echo()
-        except Exception:
-            pass
 
     click.echo("--- Recent Mentions ---")
     try:
@@ -385,24 +375,32 @@ def _display_replies_graphql(username: str) -> None:
         click.echo(f"  (GraphQL failed: {e})\n")
 
 
-def _display_dms(config: dict) -> None:
-    """Display recent DM messages via official API."""
-    skip_msg = "(Skipped: your API tier may not support this endpoint)"
-
-    result = get_dm_events(config)
-    if result is None:
-        click.echo(f"--- Recent DMs ---\n  {skip_msg}\n")
+def _display_dms() -> None:
+    """Display recent DM messages via browser cookies."""
+    click.echo("--- Recent DMs ---")
+    try:
+        messages = graphql.get_dm_inbox(count=10)
+    except Exception as e:
+        click.echo(f"  (Failed to fetch DMs: {e})\n")
+        return
+    if not messages:
+        click.echo("  No recent DMs found.\n")
     else:
-        click.echo("--- Recent DMs ---")
-        if not result["events"]:
-            click.echo("  No recent DMs found.\n")
-        else:
-            for ev in result["events"]:
-                username = result["users"].get(ev.get("sender_id"), "unknown")
-                date = ev.get("created_at", "")[:10]
-                text = ev.get("text", "")
-                click.echo(f"  @{username} ({date}): {text}")
-            click.echo()
+        from datetime import datetime, timezone
+
+        for msg in messages:
+            raw_ts = msg.get("created_at", "")
+            try:
+                ts = datetime.fromtimestamp(
+                    int(raw_ts) / 1000, tz=timezone.utc
+                ).strftime("%Y-%m-%d")
+            except (ValueError, OSError):
+                ts = raw_ts[:10]
+            other = msg.get("other_username", "unknown")
+            sender = msg.get("sender_username", "")
+            prefix = "you" if sender != other else f"@{sender}"
+            click.echo(f"  @{other} ({ts}) {prefix}: {msg['text']}")
+        click.echo()
 
 
 @cli.command()
@@ -420,11 +418,7 @@ def check(replies: bool, dms: bool):
         _display_replies_graphql(username)
 
     if show_all or dms:
-        try:
-            config = load_config()
-        except (FileNotFoundError, ValueError) as e:
-            raise click.ClickException(str(e))
-        _display_dms(config)
+        _display_dms()
 
 
 # ---------------------------------------------------------------------------
