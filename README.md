@@ -76,6 +76,42 @@ Third tweet with a video
 @media: clip.mp4
 ```
 
+### Check
+
+See recent activity — replies, mentions, and DMs:
+
+```bash
+xcli check
+```
+
+Show only replies and mentions:
+
+```bash
+xcli check --replies
+```
+
+Show only DMs:
+
+```bash
+xcli check --dms
+```
+
+Example output:
+
+```
+--- Recent Posts ---
+  Hello from the terminal!
+    Replies: 2  Likes: 5  Reposts: 1
+
+--- Recent Mentions ---
+  @alice (2026-02-25): @user love this tool!
+
+--- Recent DMs ---
+  @charlie (2026-02-26): Hey, wanted to ask about your project
+```
+
+> **Note:** Some endpoints (e.g. DMs) may not be available on all API tiers. If an endpoint is restricted for your tier, it will be skipped with a friendly message.
+
 ## License
 
 MIT

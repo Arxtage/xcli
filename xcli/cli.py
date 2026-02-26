@@ -8,6 +8,9 @@ from xcli.api import (
     GIF_EXTENSIONS,
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
+    get_dm_events,
+    get_mentions,
+    get_recent_tweets,
     post_tweet,
     upload_media,
     verify_credentials,
@@ -38,14 +41,16 @@ def setup():
 
     click.echo("\nVerifying credentials...")
     try:
-        username = verify_credentials(config)
+        user_info = verify_credentials(config)
     except PermissionError as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Verification failed: {e}")
 
+    config["user_id"] = user_info["id"]
+    config["username"] = user_info["username"]
     save_config(config)
-    click.echo(f"Authenticated as @{username}. Credentials saved.")
+    click.echo(f"Authenticated as @{user_info['username']}. Credentials saved.")
 
 
 def _validate_media_files(media: tuple[str, ...]) -> None:
@@ -229,3 +234,101 @@ def thread(tweets: tuple[str, ...], from_file: str | None):
             )
 
     click.echo(f"Thread posted! ({len(tweet_entries)} tweets)")
+
+
+def _ensure_user_id(config: dict) -> str:
+    """Return cached user_id from config, or fetch and cache it."""
+    if config.get("user_id"):
+        return config["user_id"]
+    try:
+        user_info = verify_credentials(config)
+    except PermissionError as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Failed to fetch user info: {e}")
+    config["user_id"] = user_info["id"]
+    config["username"] = user_info["username"]
+    save_config(config)
+    return user_info["id"]
+
+
+def _display_replies(config: dict, user_id: str) -> None:
+    """Display recent posts with metrics and recent mentions."""
+    skip_msg = "(Skipped: your API tier may not support this endpoint)"
+
+    tweets = get_recent_tweets(config, user_id)
+    if tweets is None:
+        click.echo(f"--- Recent Posts ---\n  {skip_msg}\n")
+    else:
+        click.echo("--- Recent Posts ---")
+        if not tweets:
+            click.echo("  No recent posts found.\n")
+        else:
+            for t in tweets:
+                click.echo(f"  {t['text']}")
+                m = t.get("public_metrics", {})
+                click.echo(
+                    f"    Replies: {m.get('reply_count', 0)}  "
+                    f"Likes: {m.get('like_count', 0)}  "
+                    f"Reposts: {m.get('retweet_count', 0)}"
+                )
+            click.echo()
+
+    mentions = get_mentions(config, user_id)
+    if mentions is None:
+        click.echo(f"--- Recent Mentions ---\n  {skip_msg}\n")
+    else:
+        click.echo("--- Recent Mentions ---")
+        if not mentions["tweets"]:
+            click.echo("  No recent mentions found.\n")
+        else:
+            for t in mentions["tweets"]:
+                username = mentions["users"].get(t.get("author_id"), "unknown")
+                date = t.get("created_at", "")[:10]
+                click.echo(f"  @{username} ({date}): {t['text']}")
+            click.echo()
+
+
+def _display_dms(config: dict) -> None:
+    """Display recent DM messages."""
+    skip_msg = "(Skipped: your API tier may not support this endpoint)"
+
+    result = get_dm_events(config)
+    if result is None:
+        click.echo(f"--- Recent DMs ---\n  {skip_msg}\n")
+    else:
+        click.echo("--- Recent DMs ---")
+        if not result["events"]:
+            click.echo("  No recent DMs found.\n")
+        else:
+            for ev in result["events"]:
+                username = result["users"].get(ev.get("sender_id"), "unknown")
+                date = ev.get("created_at", "")[:10]
+                text = ev.get("text", "")
+                click.echo(f"  @{username} ({date}): {text}")
+            click.echo()
+
+
+@cli.command()
+@click.option("--replies", is_flag=True, help="Show only replies and mentions.")
+@click.option("--dms", is_flag=True, help="Show only DMs.")
+def check(replies: bool, dms: bool):
+    """Check recent replies, mentions, and DMs."""
+    try:
+        config = load_config()
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e))
+
+    try:
+        user_id = _ensure_user_id(config)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(f"Failed to get user info: {e}")
+
+    show_all = not replies and not dms
+
+    if show_all or replies:
+        _display_replies(config, user_id)
+    if show_all or dms:
+        _display_dms(config)
