@@ -9,23 +9,97 @@ from xcli.api import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
     get_dm_events,
-    get_mentions,
+    get_mentions as api_get_mentions,
     get_recent_tweets,
     post_tweet,
     upload_media,
     verify_credentials,
 )
 from xcli.config import load_config, save_config
+from xcli import graphql
 
 
 @click.group()
 def cli():
-    """A simple CLI tool to post to X from your terminal."""
+    """A CLI tool to post and read on X from your terminal."""
+
+
+# ---------------------------------------------------------------------------
+# Display helpers
+# ---------------------------------------------------------------------------
+
+
+def _display_tweet_list(tweets: list[dict]) -> None:
+    """Format and display a list of tweets."""
+    if not tweets:
+        click.echo("  No tweets found.")
+        return
+    for i, t in enumerate(tweets, 1):
+        author = t.get("author", {})
+        handle = f"@{author['username']}" if author.get("username") else ""
+
+        if t.get("retweetedBy"):
+            click.echo(f"  {i}. RT by @{t['retweetedBy']}")
+            click.echo(f"     {handle}: {t['text']}")
+        else:
+            click.echo(f"  {i}. {handle}")
+            click.echo(f"     {t['text']}")
+
+        link = f"x.com/i/status/{t['id']}" if t.get("id") else ""
+        click.echo(
+            f"     {t.get('replyCount', 0)} replies  "
+            f"{t.get('likeCount', 0)} likes  "
+            f"{t.get('retweetCount', 0)} reposts"
+            + (f" — {link}" if link else "")
+        )
+        click.echo()
+
+
+def _display_single_tweet(tweet: dict) -> None:
+    """Format and display a single tweet in detail."""
+    author = tweet.get("author", {})
+    handle = f"@{author['username']}" if author.get("username") else ""
+    name = author.get("name", "")
+
+    if tweet.get("retweetedBy"):
+        click.echo(f"RT by @{tweet['retweetedBy']}")
+    click.echo(f"{name} ({handle})")
+    click.echo(f"\n  {tweet['text']}\n")
+    click.echo(
+        f"  {tweet.get('replyCount', 0)} replies  "
+        f"{tweet.get('likeCount', 0)} likes  "
+        f"{tweet.get('retweetCount', 0)} reposts  "
+        f"{tweet.get('viewCount', 0)} views"
+    )
+    if tweet.get("createdAt"):
+        click.echo(f"  Posted: {tweet['createdAt']}")
+    if tweet.get("id"):
+        click.echo(f"  https://x.com/i/status/{tweet['id']}")
+
+
+def _display_user_list(users: list[dict]) -> None:
+    """Format and display a list of users."""
+    if not users:
+        click.echo("  No users found.")
+        return
+    for u in users:
+        click.echo(f"  @{u.get('username', '')} — {u.get('name', '')}")
+        if u.get("bio"):
+            click.echo(f"    {u['bio'][:120]}")
+        click.echo(
+            f"    Followers: {u.get('followers', 0)}  "
+            f"Following: {u.get('following', 0)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Setup (unchanged)
+# ---------------------------------------------------------------------------
 
 
 @cli.command()
 def setup():
-    """Configure your X API credentials."""
+    """Configure your X API credentials (for posting)."""
     click.echo("Enter your X API credentials.\n")
     consumer_key = click.prompt("Consumer Key", hide_input=True)
     consumer_secret = click.prompt("Consumer Secret", hide_input=True)
@@ -51,6 +125,11 @@ def setup():
     config["username"] = user_info["username"]
     save_config(config)
     click.echo(f"Authenticated as @{user_info['username']}. Credentials saved.")
+
+
+# ---------------------------------------------------------------------------
+# Post + Thread (unchanged)
+# ---------------------------------------------------------------------------
 
 
 def _validate_media_files(media: tuple[str, ...]) -> None:
@@ -236,61 +315,78 @@ def thread(tweets: tuple[str, ...], from_file: str | None):
     click.echo(f"Thread posted! ({len(tweet_entries)} tweets)")
 
 
-def _ensure_user_id(config: dict) -> str:
-    """Return cached user_id from config, or fetch and cache it."""
-    if config.get("user_id"):
-        return config["user_id"]
+# ---------------------------------------------------------------------------
+# Check (refactored to use GraphQL for posts/mentions, API for DMs)
+# ---------------------------------------------------------------------------
+
+
+def _get_username() -> str:
+    """Get username from config or GraphQL whoami."""
     try:
-        user_info = verify_credentials(config)
-    except PermissionError as e:
-        raise click.ClickException(str(e))
-    except Exception as e:
-        raise click.ClickException(f"Failed to fetch user info: {e}")
-    config["user_id"] = user_info["id"]
-    config["username"] = user_info["username"]
-    save_config(config)
-    return user_info["id"]
+        config = load_config()
+        if config.get("username"):
+            return config["username"]
+    except (FileNotFoundError, ValueError):
+        pass
+    # Fall back to GraphQL whoami
+    user = graphql.whoami()
+    return user["username"]
 
 
-def _display_replies(config: dict, user_id: str) -> None:
-    """Display recent posts with metrics and recent mentions."""
-    skip_msg = "(Skipped: your API tier may not support this endpoint)"
-
-    tweets = get_recent_tweets(config, user_id)
-    if tweets is None:
-        click.echo(f"--- Recent Posts ---\n  {skip_msg}\n")
-    else:
-        click.echo("--- Recent Posts ---")
+def _display_replies_graphql(username: str) -> None:
+    """Display recent posts and mentions via GraphQL."""
+    click.echo("--- Recent Posts ---")
+    try:
+        tweets = graphql.get_user_tweets(username, count=5)
         if not tweets:
             click.echo("  No recent posts found.\n")
         else:
             for t in tweets:
                 click.echo(f"  {t['text']}")
-                m = t.get("public_metrics", {})
                 click.echo(
-                    f"    Replies: {m.get('reply_count', 0)}  "
-                    f"Likes: {m.get('like_count', 0)}  "
-                    f"Reposts: {m.get('retweet_count', 0)}"
+                    f"    Replies: {t.get('replyCount', 0)}  "
+                    f"Likes: {t.get('likeCount', 0)}  "
+                    f"Reposts: {t.get('retweetCount', 0)}"
                 )
             click.echo()
+    except Exception as e:
+        click.echo(f"  (GraphQL failed: {e})\n")
+        # Fall back to API
+        try:
+            config = load_config()
+            user_id = config.get("user_id", "")
+            if user_id:
+                tweets = get_recent_tweets(config, user_id)
+                if tweets:
+                    for t in tweets:
+                        click.echo(f"  {t['text']}")
+                        m = t.get("public_metrics", {})
+                        click.echo(
+                            f"    Replies: {m.get('reply_count', 0)}  "
+                            f"Likes: {m.get('like_count', 0)}  "
+                            f"Reposts: {m.get('retweet_count', 0)}"
+                        )
+                    click.echo()
+        except Exception:
+            pass
 
-    mentions = get_mentions(config, user_id)
-    if mentions is None:
-        click.echo(f"--- Recent Mentions ---\n  {skip_msg}\n")
-    else:
-        click.echo("--- Recent Mentions ---")
-        if not mentions["tweets"]:
+    click.echo("--- Recent Mentions ---")
+    try:
+        mentions = graphql.get_mentions(username, count=10)
+        if not mentions:
             click.echo("  No recent mentions found.\n")
         else:
-            for t in mentions["tweets"]:
-                username = mentions["users"].get(t.get("author_id"), "unknown")
-                date = t.get("created_at", "")[:10]
-                click.echo(f"  @{username} ({date}): {t['text']}")
+            for t in mentions:
+                author = t.get("author", {})
+                handle = f"@{author['username']}" if author.get("username") else ""
+                click.echo(f"  {handle}: {t['text']}")
             click.echo()
+    except Exception as e:
+        click.echo(f"  (GraphQL failed: {e})\n")
 
 
 def _display_dms(config: dict) -> None:
-    """Display recent DM messages."""
+    """Display recent DM messages via official API."""
     skip_msg = "(Skipped: your API tier may not support this endpoint)"
 
     result = get_dm_events(config)
@@ -314,21 +410,131 @@ def _display_dms(config: dict) -> None:
 @click.option("--dms", is_flag=True, help="Show only DMs.")
 def check(replies: bool, dms: bool):
     """Check recent replies, mentions, and DMs."""
-    try:
-        config = load_config()
-    except (FileNotFoundError, ValueError) as e:
-        raise click.ClickException(str(e))
-
-    try:
-        user_id = _ensure_user_id(config)
-    except click.ClickException:
-        raise
-    except Exception as e:
-        raise click.ClickException(f"Failed to get user info: {e}")
-
     show_all = not replies and not dms
 
     if show_all or replies:
-        _display_replies(config, user_id)
+        try:
+            username = _get_username()
+        except Exception as e:
+            raise click.ClickException(f"Failed to get user info: {e}")
+        _display_replies_graphql(username)
+
     if show_all or dms:
+        try:
+            config = load_config()
+        except (FileNotFoundError, ValueError) as e:
+            raise click.ClickException(str(e))
         _display_dms(config)
+
+
+# ---------------------------------------------------------------------------
+# New read commands (all use GraphQL + browser cookies)
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("query")
+@click.option("-n", "--count", default=10, help="Number of results.")
+def search(query: str, count: int):
+    """Search tweets on X."""
+    try:
+        tweets = graphql.search(query, count=count)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    _display_tweet_list(tweets)
+
+
+@cli.command()
+@click.option("-n", "--count", default=20, help="Number of tweets.")
+def home(count: int):
+    """Show your home timeline."""
+    try:
+        tweets = graphql.get_home_timeline(count=count)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    _display_tweet_list(tweets)
+
+
+@cli.command()
+@click.argument("tweet")
+def read(tweet: str):
+    """Read a single tweet by URL or ID."""
+    try:
+        result = graphql.read_tweet(tweet)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    if not result:
+        raise click.ClickException("Tweet not found.")
+    _display_single_tweet(result)
+
+
+@cli.command()
+@click.option("-n", "--count", default=10, help="Number of bookmarks.")
+def bookmarks(count: int):
+    """Show your bookmarked tweets."""
+    try:
+        tweets = graphql.get_bookmarks(count=count)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    _display_tweet_list(tweets)
+
+
+@cli.command()
+@click.option("-n", "--count", default=10, help="Number of liked tweets.")
+def likes(count: int):
+    """Show your liked tweets."""
+    try:
+        user = graphql.whoami()
+    except Exception as e:
+        raise click.ClickException(str(e))
+    try:
+        tweets = graphql.get_likes(user["id"], count=count)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    _display_tweet_list(tweets)
+
+
+@cli.command()
+@click.option("-n", "--count", default=20, help="Number of followers.")
+def followers(count: int):
+    """Show your followers."""
+    try:
+        user = graphql.whoami()
+    except Exception as e:
+        raise click.ClickException(str(e))
+    try:
+        users = graphql.get_followers(user["id"], count=count)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    _display_user_list(users)
+
+
+@cli.command()
+@click.option("-n", "--count", default=20, help="Number of accounts.")
+def following(count: int):
+    """Show accounts you follow."""
+    try:
+        user = graphql.whoami()
+    except Exception as e:
+        raise click.ClickException(str(e))
+    try:
+        users = graphql.get_following(user["id"], count=count)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    _display_user_list(users)
+
+
+@cli.command()
+def whoami():
+    """Verify browser cookie auth and show your X profile."""
+    try:
+        user = graphql.whoami()
+    except Exception as e:
+        raise click.ClickException(str(e))
+    click.echo(f"@{user['username']} — {user['name']}")
+    if user.get("bio"):
+        click.echo(f"  {user['bio']}")
+    click.echo(
+        f"  Followers: {user.get('followers', 0)}  "
+        f"Following: {user.get('following', 0)}"
+    )

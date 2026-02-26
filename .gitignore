@@ -5,3 +5,9 @@ dist/
 build/
 *.egg
 .venv/
+
+# Secrets / credentials
+.xcli/
+config.json
+*.env
+.env*

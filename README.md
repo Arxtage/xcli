@@ -1,6 +1,9 @@
 # xcli
 
-A simple CLI tool to post to X from your terminal via the X API v2.
+A CLI tool to post and read on X from your terminal.
+
+- **Posting** uses the official X API v2 (OAuth 1.0a) — requires API keys
+- **Reading** uses your browser's login session (cookies) — free, no API key needed
 
 ## Installation
 
@@ -10,7 +13,19 @@ pip install .
 
 ## Setup
 
-You'll need OAuth 1.0a credentials from the [X Developer Portal](https://developer.x.com/). Create an app in the portal and grab the following four tokens:
+### Reading (browser cookies — automatic)
+
+Just log into [x.com](https://x.com) in Arc, Chrome, Safari, or Firefox. xcli automatically extracts your session cookies for read operations. No configuration needed.
+
+Verify it works:
+
+```bash
+xcli whoami
+```
+
+### Posting (API credentials — required for `post`, `thread`, DMs)
+
+You'll need OAuth 1.0a credentials from the [X Developer Portal](https://developer.x.com/). Create an app and grab:
 
 - **Consumer Key** / **Consumer Secret** — identify your app
 - **Access Token** / **Access Token Secret** — grant access to a specific user account
@@ -21,9 +36,81 @@ Then run:
 xcli setup
 ```
 
-This prompts for your credentials, verifies them against the API, and saves them to `~/.xcli/config.json`.
+This prompts for your credentials, verifies them, and saves them to `~/.xcli/config.json`.
 
 ## Usage
+
+### Read Commands
+
+All read commands use browser cookies — no API setup required.
+
+#### Home Timeline
+
+```bash
+xcli home
+xcli home -n 10
+```
+
+Example output:
+
+```
+  1. @paulg
+     For the foreseeable future, everything about starting a startup...
+     3 replies  631 likes  39 reposts — x.com/i/status/123
+
+  2. RT by @armantsaturian
+     @svlevine: At Physical Intelligence, we teamed up with...
+     0 replies  428 likes  43 reposts — x.com/i/status/456
+
+  3. @vaborsh
+     Nano Banana 2 is our new faster and better SOTA image...
+     64 replies  1114 likes  71 reposts — x.com/i/status/789
+```
+
+Retweets are shown with `RT by @handle` followed by the original author and content.
+
+#### Search
+
+```bash
+xcli search "python"
+xcli search "from:elonmusk" -n 5
+```
+
+#### Read a Tweet
+
+```bash
+xcli read https://x.com/user/status/1234567890
+xcli read 1234567890
+```
+
+#### Bookmarks
+
+```bash
+xcli bookmarks
+xcli bookmarks -n 20
+```
+
+#### Likes
+
+```bash
+xcli likes
+xcli likes -n 20
+```
+
+#### Followers / Following
+
+```bash
+xcli followers
+xcli followers -n 50
+xcli following
+xcli following -n 50
+```
+
+#### Who Am I
+
+```bash
+xcli whoami
+```
 
 ### Post
 
@@ -78,7 +165,7 @@ Third tweet with a video
 
 ### Check
 
-See recent activity — replies, mentions, and DMs:
+See recent activity — posts, mentions, and DMs. Posts and mentions use browser cookies (GraphQL); DMs use the official API.
 
 ```bash
 xcli check
@@ -100,17 +187,18 @@ Example output:
 
 ```
 --- Recent Posts ---
-  Hello from the terminal!
-    Replies: 2  Likes: 5  Reposts: 1
+  1. @you
+     Hello from the terminal!
+     2 replies  5 likes  1 reposts — x.com/i/status/123
 
 --- Recent Mentions ---
-  @alice (2026-02-25): @user love this tool!
+  @alice: @you love this tool!
 
 --- Recent DMs ---
   @charlie (2026-02-26): Hey, wanted to ask about your project
 ```
 
-> **Note:** Some endpoints (e.g. DMs) may not be available on all API tiers. If an endpoint is restricted for your tier, it will be skipped with a friendly message.
+> **Note:** DMs require API credentials (`xcli setup`). Some DM endpoints may not be available on all API tiers.
 
 ## License
 
