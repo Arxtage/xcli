@@ -425,6 +425,18 @@ def dms():
 
 
 @cli.command()
+@click.argument("username")
+@click.option("-n", "--count", default=10, help="Number of tweets.")
+def user(username: str, count: int):
+    """Fetch tweets from a specific user by @handle."""
+    try:
+        tweets = graphql.get_user_tweets(username, count=count)
+    except Exception as e:
+        raise click.ClickException(str(e))
+    _display_tweet_list(tweets)
+
+
+@cli.command()
 @click.argument("query")
 @click.option("-n", "--count", default=10, help="Number of results.")
 def search(query: str, count: int):
