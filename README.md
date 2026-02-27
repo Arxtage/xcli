@@ -17,6 +17,8 @@ pip install .
 
 Just log into [x.com](https://x.com) in Arc, Chrome, Safari, or Firefox. xcli automatically extracts your session cookies for read operations. No configuration needed.
 
+xcli auto-discovers GraphQL query IDs from X's JavaScript bundles when hardcoded ones go stale (404). Fresh IDs are cached at `~/.xcli/query_ids.json` for 24 hours. If scraping fails, hardcoded fallbacks are still tried.
+
 Verify it works:
 
 ```bash
@@ -75,6 +77,8 @@ Retweets are shown with `RT by @handle` followed by the original author and cont
 xcli search "python"
 xcli search "from:elonmusk" -n 5
 ```
+
+Search (and mentions) will automatically fall back to the v1.1 REST API if GraphQL SearchTimeline is unavailable. The fallback uses the same cookie auth — no extra setup needed. Reply and view counts are unavailable via v1.1.
 
 #### Read a Tweet
 

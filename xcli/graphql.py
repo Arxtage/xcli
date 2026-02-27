@@ -9,6 +9,7 @@ import uuid
 import requests
 
 from xcli.cookies import clear_cached_cookies, get_read_cookies
+from xcli.query_ids import get_query_ids, invalidate_cache, scrape_query_ids
 
 # Public bearer token used by X's web client (not tied to any user account)
 BEARER_TOKEN = (
@@ -80,67 +81,119 @@ def _build_headers(cookies: dict) -> dict:
     }
 
 
+def _try_query_ids(
+    operation: str,
+    query_ids: list[str],
+    params: dict,
+    cookies: dict,
+    json_body: dict | None = None,
+) -> dict | None:
+    """Try each query ID for an operation. Returns response JSON or None if all 404.
+
+    Tries GET first. If all IDs return 404 and *json_body* is provided,
+    retries with POST (X has migrated some operations from GET to POST).
+    """
+    for method, attempts in [("GET", query_ids), ("POST", query_ids if json_body else [])]:
+        all_404 = True
+
+        for qid in attempts:
+            url = f"{GRAPHQL_BASE}/{qid}/{operation}"
+            headers = _build_headers(cookies)
+
+            try:
+                if method == "POST":
+                    headers["Content-Type"] = "application/json"
+                    resp = requests.post(url, json=json_body, headers=headers, timeout=15)
+                else:
+                    resp = requests.get(url, params=params, headers=headers, timeout=15)
+            except requests.RequestException:
+                all_404 = False
+                continue
+
+            if resp.status_code == 404:
+                continue
+
+            all_404 = False
+
+            if resp.status_code == 401:
+                clear_cached_cookies()
+                fresh_cookies = get_read_cookies()
+                headers = _build_headers(fresh_cookies)
+                if method == "POST":
+                    headers["Content-Type"] = "application/json"
+                    resp = requests.post(url, json=json_body, headers=headers, timeout=15)
+                else:
+                    resp = requests.get(url, params=params, headers=headers, timeout=15)
+                if resp.status_code == 401:
+                    raise RuntimeError(
+                        "X session expired. Log into x.com in your browser and try again."
+                    )
+                cookies.update(fresh_cookies)
+
+            if resp.status_code == 429:
+                raise RuntimeError("Rate limited by X. Wait a few minutes and try again.")
+
+            if resp.status_code == 200:
+                return resp.json()
+
+            continue
+
+        if not all_404:
+            raise RuntimeError(
+                f"All query IDs failed for {operation}. X may have changed their API."
+            )
+
+    # All IDs returned 404 for both GET and POST
+    if query_ids:
+        return None  # Signal to caller: stale IDs, try scraping
+
+    raise RuntimeError(
+        f"All query IDs failed for {operation}. X may have changed their API."
+    )
+
+
 def _graphql_request(
     operation: str, variables: dict, features: dict | None = None
 ) -> dict:
-    """Make a GET request to X's GraphQL API.
+    """Make a request to X's GraphQL API (tries GET then POST).
 
-    Tries each query ID for the operation; retries with next ID on 404.
-    On 401, clears cached cookies and retries once with fresh cookies.
+    Two-pass approach:
+    1. Try cached + hardcoded IDs (fast path)
+    2. If all return 404 → scrape fresh IDs from X's JS bundles and retry
     """
     import json as json_mod
 
     if features is None:
         features = DEFAULT_FEATURES
 
-    query_ids = QUERY_IDS.get(operation)
-    if not query_ids:
-        raise ValueError(f"Unknown GraphQL operation: {operation}")
+    hardcoded = QUERY_IDS.get(operation, [])
 
     cookies = get_read_cookies()
-
     params = {
         "variables": json_mod.dumps(variables),
         "features": json_mod.dumps(features),
     }
+    json_body = {"variables": variables, "features": features}
 
-    last_error = None
-    for qid in query_ids:
-        url = f"{GRAPHQL_BASE}/{qid}/{operation}"
-        headers = _build_headers(cookies)
-        try:
-            resp = requests.get(url, params=params, headers=headers, timeout=15)
-        except requests.RequestException as e:
-            last_error = e
-            continue
+    # Pass 1: cached + hardcoded IDs
+    ids = get_query_ids(operation, hardcoded)
+    if ids:
+        result = _try_query_ids(operation, ids, params, cookies, json_body)
+        if result is not None:
+            return result
 
-        if resp.status_code == 404:
-            last_error = RuntimeError(f"Query ID {qid} returned 404")
-            continue
+    # Pass 2: all IDs returned 404 — scrape fresh ones
+    invalidate_cache()
+    fresh_ids = scrape_query_ids(operation, hardcoded)
+    if fresh_ids:
+        result = _try_query_ids(operation, fresh_ids, params, cookies, json_body)
+        if result is not None:
+            return result
 
-        if resp.status_code == 401:
-            # Cookies may have expired — clear cache and retry with fresh ones
-            clear_cached_cookies()
-            cookies = get_read_cookies()
-            headers = _build_headers(cookies)
-            resp = requests.get(url, params=params, headers=headers, timeout=15)
-            if resp.status_code == 401:
-                raise RuntimeError(
-                    "X session expired. Log into x.com in your browser and try again."
-                )
-
-        if resp.status_code == 429:
-            raise RuntimeError("Rate limited by X. Wait a few minutes and try again.")
-
-        if resp.status_code != 200:
-            last_error = RuntimeError(
-                f"GraphQL {operation} returned {resp.status_code}: {resp.text[:200]}"
-            )
-            continue
-
-        return resp.json()
-
-    raise last_error or RuntimeError(f"All query IDs failed for {operation}")
+    raise RuntimeError(
+        f"All query IDs failed for {operation}. "
+        "X may have rotated their API — try again later or update xcli."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -294,16 +347,78 @@ def _find_instructions(data: dict) -> list:
 # ---------------------------------------------------------------------------
 
 
-def search(query: str, count: int = 10) -> list[dict]:
-    """Search tweets via GraphQL."""
-    variables = {
-        "rawQuery": query,
+def _search_v1(query: str, count: int = 10) -> list[dict]:
+    """Fallback: search tweets via the v1.1 REST API with cookie auth.
+
+    Used when GraphQL SearchTimeline is broken (all query IDs return 404).
+    Same auth pattern as whoami/dms.
+    """
+    cookies = get_read_cookies()
+    headers = _build_headers(cookies)
+    params = {
+        "q": query,
         "count": count,
-        "querySource": "typed_query",
-        "product": "Latest",
+        "result_type": "recent",
+        "tweet_mode": "extended",
     }
-    data = _graphql_request("SearchTimeline", variables)
-    return _extract_timeline_tweets(data)[:count]
+    resp = requests.get(
+        "https://api.x.com/1.1/search/tweets.json",
+        params=params,
+        headers=headers,
+        timeout=15,
+    )
+    if resp.status_code == 401:
+        clear_cached_cookies()
+        cookies = get_read_cookies()
+        headers = _build_headers(cookies)
+        resp = requests.get(
+            "https://api.x.com/1.1/search/tweets.json",
+            params=params,
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "X session expired. Log into x.com in your browser and try again."
+            )
+    if resp.status_code == 429:
+        raise RuntimeError("Rate limited by X. Wait a few minutes and try again.")
+    if resp.status_code != 200:
+        raise RuntimeError(f"v1.1 search failed with status {resp.status_code}")
+
+    tweets = []
+    for status in resp.json().get("statuses", []):
+        user = status.get("user", {})
+        tweets.append({
+            "id": status.get("id_str", ""),
+            "text": status.get("full_text", ""),
+            "author": {
+                "username": user.get("screen_name", ""),
+                "name": user.get("name", ""),
+            },
+            "retweetedBy": None,
+            "createdAt": status.get("created_at", ""),
+            "replyCount": 0,  # v1.1 doesn't provide reply count
+            "likeCount": status.get("favorite_count", 0),
+            "retweetCount": status.get("retweet_count", 0),
+            "viewCount": 0,  # v1.1 doesn't provide view count
+        })
+    return tweets[:count]
+
+
+def search(query: str, count: int = 10) -> list[dict]:
+    """Search tweets via GraphQL, falling back to v1.1 REST if GraphQL fails."""
+    try:
+        variables = {
+            "rawQuery": query,
+            "count": count,
+            "querySource": "typed_query",
+            "product": "Latest",
+        }
+        data = _graphql_request("SearchTimeline", variables)
+        return _extract_timeline_tweets(data)[:count]
+    except Exception:
+        return _search_v1(query, count)
 
 
 def get_home_timeline(count: int = 20) -> list[dict]:
