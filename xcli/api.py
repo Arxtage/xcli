@@ -177,3 +177,70 @@ def _chunked_upload(
         processing_info = resp.json().get("processing_info")
 
     return media_id
+
+
+def get_dm_events(config: dict, max_results: int = 20) -> list[dict]:
+    """Fetch recent DM events via the v2 API (requires DM permissions).
+
+    Returns a list of dicts with keys:
+        other_username, other_name, sender_username, text, created_at, conversation_id
+    """
+    auth = _make_auth(config)
+
+    resp = requests.get(
+        f"{BASE_URL}/dm_events",
+        params={
+            "dm_event.fields": "id,text,created_at,sender_id,dm_conversation_id,event_type",
+            "max_results": min(max_results, 100),
+            "expansions": "sender_id,participant_ids",
+            "user.fields": "username,name",
+            "event_types": "MessageCreate",
+        },
+        auth=auth,
+        timeout=15,
+    )
+    if resp.status_code == 403:
+        raise PermissionError(
+            "Your app lacks DM permissions. In the X Developer Portal, set "
+            "app permissions to 'Read and write and Direct message', regenerate "
+            "your access tokens, then run 'xcli setup' again."
+        )
+    if resp.status_code == 401:
+        raise PermissionError("Authentication failed. Check your API keys.")
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Build user lookup from includes
+    users_by_id: dict[str, dict] = {}
+    for u in data.get("includes", {}).get("users", []):
+        users_by_id[u["id"]] = {"username": u.get("username", ""), "name": u.get("name", "")}
+
+    # Get authenticated user's ID
+    my_id = config.get("user_id", "")
+
+    # Group events by conversation, keep only the latest per conversation
+    latest: dict[str, dict] = {}
+    for event in data.get("data", []):
+        conv_id = event.get("dm_conversation_id", "")
+        if conv_id in latest:
+            continue  # events come newest-first, so first seen = latest
+
+        sender_id = event.get("sender_id", "")
+        sender = users_by_id.get(sender_id, {"username": "unknown", "name": ""})
+
+        # Determine the "other" person in the conversation
+        # Convention: conversation IDs for 1:1 are "{lower_id}-{higher_id}"
+        parts = conv_id.split("-")
+        other_id = next((p for p in parts if p != my_id), sender_id)
+        other = users_by_id.get(other_id, {"username": other_id, "name": ""})
+
+        latest[conv_id] = {
+            "other_username": other["username"],
+            "other_name": other["name"],
+            "sender_username": sender["username"],
+            "text": event.get("text", ""),
+            "created_at": event.get("created_at", ""),
+            "conversation_id": conv_id,
+        }
+
+    return list(latest.values())

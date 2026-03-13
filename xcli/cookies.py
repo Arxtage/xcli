@@ -2,8 +2,6 @@
 
 import browser_cookie3
 
-from xcli.config import CONFIG_FILE, save_config
-
 BROWSERS = [
     ("Arc", browser_cookie3.arc),
     ("Chrome", browser_cookie3.chrome),
@@ -13,6 +11,9 @@ BROWSERS = [
 
 COOKIE_NAMES = {"auth_token", "ct0"}
 DOMAINS = [".x.com", ".twitter.com"]
+
+# In-memory cache — fresh cookies extracted once per CLI invocation
+_memory_cache: dict | None = None
 
 
 def _extract_from_browser(browser_fn) -> dict | None:
@@ -33,47 +34,16 @@ def _extract_from_browser(browser_fn) -> dict | None:
     return None
 
 
-def _load_cached() -> dict | None:
-    """Load cached cookies from config file."""
-    if not CONFIG_FILE.exists():
-        return None
-    import json
-
-    try:
-        config = json.loads(CONFIG_FILE.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    token = config.get("read_auth_token")
-    ct0 = config.get("read_ct0")
-    if token and ct0:
-        return {"auth_token": token, "ct0": ct0}
-    return None
-
-
-def _cache_cookies(cookies: dict) -> None:
-    """Save cookies to the config file (merges with existing config)."""
-    import json
-
-    config = {}
-    if CONFIG_FILE.exists():
-        try:
-            config = json.loads(CONFIG_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    config["read_auth_token"] = cookies["auth_token"]
-    config["read_ct0"] = cookies["ct0"]
-    save_config(config)
-
-
 def get_read_cookies() -> dict:
     """Return {"auth_token": "...", "ct0": "..."} for X GraphQL reads.
 
-    Tries cached cookies first, then extracts from browsers (Arc > Chrome > Safari > Firefox).
-    Raises RuntimeError if no cookies found.
+    Extracts fresh cookies from the browser on first call, then caches
+    in-memory for the rest of the process. The ct0 CSRF token rotates
+    frequently, so we never persist cookies to disk.
     """
-    cached = _load_cached()
-    if cached:
-        return cached
+    global _memory_cache
+    if _memory_cache:
+        return _memory_cache
 
     for name, browser_fn in BROWSERS:
         try:
@@ -81,7 +51,7 @@ def get_read_cookies() -> dict:
         except Exception:
             continue
         if cookies:
-            _cache_cookies(cookies)
+            _memory_cache = cookies
             return cookies
 
     raise RuntimeError(
@@ -92,15 +62,6 @@ def get_read_cookies() -> dict:
 
 
 def clear_cached_cookies() -> None:
-    """Remove cached cookies from config (forces re-extraction on next use)."""
-    import json
-
-    if not CONFIG_FILE.exists():
-        return
-    try:
-        config = json.loads(CONFIG_FILE.read_text())
-    except (json.JSONDecodeError, OSError):
-        return
-    config.pop("read_auth_token", None)
-    config.pop("read_ct0", None)
-    save_config(config)
+    """Clear the in-memory cookie cache (forces re-extraction from browser)."""
+    global _memory_cache
+    _memory_cache = None

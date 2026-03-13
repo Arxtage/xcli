@@ -8,6 +8,7 @@ from xcli.api import (
     GIF_EXTENSIONS,
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
+    get_dm_events,
     post_tweet,
     upload_media,
     verify_credentials,
@@ -43,10 +44,19 @@ def _display_tweet_list(tweets: list[dict]) -> None:
             click.echo(f"     {t['text']}")
 
         link = f"x.com/i/status/{t['id']}" if t.get("id") else ""
+        time_str = ""
+        if t.get("createdAt"):
+            try:
+                from email.utils import parsedate_to_datetime
+                dt = parsedate_to_datetime(t["createdAt"])
+                time_str = dt.strftime("%b %d, %H:%M")
+            except Exception:
+                time_str = t["createdAt"]
         click.echo(
             f"     {t.get('replyCount', 0)} replies  "
             f"{t.get('likeCount', 0)} likes  "
             f"{t.get('retweetCount', 0)} reposts"
+            + (f" — {time_str}" if time_str else "")
             + (f" — {link}" if link else "")
         )
         click.echo()
@@ -113,15 +123,25 @@ def setup():
     click.echo("\nVerifying credentials...")
     try:
         user_info = verify_credentials(config)
-    except PermissionError as e:
-        raise click.ClickException(str(e))
+        config["user_id"] = user_info["id"]
+        config["username"] = user_info["username"]
+        save_config(config)
+        click.echo(f"Authenticated as @{user_info['username']}. Credentials saved.")
+    except PermissionError:
+        # Free tier can't call /2/users/me — fall back to cookie-based identity
+        click.echo("  API verification unavailable (Free tier). Trying browser cookies...")
+        try:
+            user = graphql.whoami()
+            config["user_id"] = user["id"]
+            config["username"] = user["username"]
+            save_config(config)
+            click.echo(f"Authenticated as @{user['username']}. Credentials saved.")
+        except Exception:
+            # No cookie auth either — save without user info
+            save_config(config)
+            click.echo("Credentials saved (could not verify — posting may still work).")
     except Exception as e:
         raise click.ClickException(f"Verification failed: {e}")
-
-    config["user_id"] = user_info["id"]
-    config["username"] = user_info["username"]
-    save_config(config)
-    click.echo(f"Authenticated as @{user_info['username']}. Credentials saved.")
 
 
 # ---------------------------------------------------------------------------
@@ -375,32 +395,35 @@ def _display_replies_graphql(username: str) -> None:
         click.echo(f"  (GraphQL failed: {e})\n")
 
 
-def _display_dms() -> None:
-    """Display recent DM messages via browser cookies."""
-    click.echo("--- Recent DMs ---")
-    try:
-        messages = graphql.get_dm_inbox(count=10)
-    except Exception as e:
-        click.echo(f"  (Failed to fetch DMs: {e})\n")
-        return
-    if not messages:
-        click.echo("  No recent DMs found.\n")
-    else:
-        from datetime import datetime, timezone
+def _display_dms_v2(messages: list[dict]) -> None:
+    """Display DM messages fetched via the v2 API."""
+    for msg in messages:
+        raw_ts = msg.get("created_at", "")
+        ts = raw_ts[:10] if raw_ts else "?"
+        other = msg.get("other_username", "unknown")
+        sender = msg.get("sender_username", "")
+        prefix = "you" if sender != other else f"@{sender}"
+        click.echo(f"  @{other} ({ts}) {prefix}: {msg['text']}")
+    click.echo()
 
-        for msg in messages:
-            raw_ts = msg.get("created_at", "")
-            try:
-                ts = datetime.fromtimestamp(
-                    int(raw_ts) / 1000, tz=timezone.utc
-                ).strftime("%Y-%m-%d")
-            except (ValueError, OSError):
-                ts = raw_ts[:10]
-            other = msg.get("other_username", "unknown")
-            sender = msg.get("sender_username", "")
-            prefix = "you" if sender != other else f"@{sender}"
-            click.echo(f"  @{other} ({ts}) {prefix}: {msg['text']}")
-        click.echo()
+
+def _display_dms_v1(messages: list[dict]) -> None:
+    """Display DM messages fetched via v1.1 cookie-based API."""
+    from datetime import datetime, timezone
+
+    for msg in messages:
+        raw_ts = msg.get("created_at", "")
+        try:
+            ts = datetime.fromtimestamp(
+                int(raw_ts) / 1000, tz=timezone.utc
+            ).strftime("%Y-%m-%d")
+        except (ValueError, OSError):
+            ts = raw_ts[:10]
+        other = msg.get("other_username", "unknown")
+        sender = msg.get("sender_username", "")
+        prefix = "you" if sender != other else f"@{sender}"
+        click.echo(f"  @{other} ({ts}) {prefix}: {msg['text']}")
+    click.echo()
 
 
 @cli.command()
@@ -416,7 +439,32 @@ def mentions():
 @cli.command()
 def dms():
     """Show your recent DMs."""
-    _display_dms()
+    click.echo("--- Recent DMs ---")
+    # Try v2 API (OAuth 1.0a) first — requires DM permissions
+    try:
+        config = load_config()
+        messages = get_dm_events(config, max_results=20)
+        if messages:
+            _display_dms_v2(messages)
+            return
+    except PermissionError as e:
+        click.echo(f"  (v2 API: {e})")
+        click.echo("  Falling back to browser cookies...\n")
+    except (FileNotFoundError, ValueError):
+        pass  # No API config — fall through to cookie method
+    except Exception:
+        pass  # Any other v2 failure — fall through
+
+    # Fallback: v1.1 cookie-based endpoint
+    try:
+        messages = graphql.get_dm_inbox(count=10)
+    except Exception as e:
+        click.echo(f"  (Failed to fetch DMs: {e})\n")
+        return
+    if not messages:
+        click.echo("  No recent DMs found.\n")
+    else:
+        _display_dms_v1(messages)
 
 
 # ---------------------------------------------------------------------------
